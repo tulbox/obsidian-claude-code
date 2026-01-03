@@ -6,6 +6,21 @@ import {
   mockFsForClaudeExecutable,
   type TestAgentControllerResult,
 } from "../../helpers/agentFactory";
+
+// Ensure fs mock is set up at module level for this test file.
+vi.mock("fs", async () => {
+  const actual = await vi.importActual<typeof import("fs")>("fs");
+  return {
+    ...actual,
+    existsSync: vi.fn().mockImplementation((path: string) =>
+      typeof path === "string" && path.includes("claude")
+    ),
+    appendFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+  };
+});
+
 import {
   createSystemInitMessage,
   createAssistantMessage,
