@@ -1,5 +1,5 @@
-import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
-import { CHAT_VIEW_TYPE, ChatMessage, ToolCall } from "../types";
+import { ItemView, WorkspaceLeaf, setIcon, Menu, ViewStateResult } from "obsidian";
+import { CHAT_VIEW_TYPE, ChatMessage, ToolCall, Conversation } from "../types";
 import type ClaudeCodePlugin from "../main";
 import { ChatInput } from "./ChatInput";
 import { MessageList } from "./MessageList";
@@ -20,13 +20,19 @@ export class ChatView extends ItemView {
   private agentController: AgentController;
   private conversationManager: ConversationManager;
   private streamingMessageId: string | null = null;
+  private viewId: string;
 
   constructor(leaf: WorkspaceLeaf, plugin: ClaudeCodePlugin) {
     super(leaf);
     this.plugin = plugin;
+    this.viewId = this.generateViewId();
     this.agentController = new AgentController(plugin);
     this.conversationManager = new ConversationManager(plugin);
     this.setupAgentEvents();
+  }
+
+  private generateViewId(): string {
+    return `view-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   }
 
   private setupAgentEvents() {
@@ -51,11 +57,33 @@ export class ChatView extends ItemView {
   }
 
   getDisplayText(): string {
+    const conv = this.conversationManager?.getCurrentConversation();
+    if (conv && conv.title && conv.title !== "New Conversation") {
+      // Truncate long titles for tab display.
+      const maxLen = 20;
+      const title = conv.title.length > maxLen ? conv.title.slice(0, maxLen) + "..." : conv.title;
+      return `Claude: ${title}`;
+    }
     return "Claude Code";
   }
 
   getIcon(): string {
     return "message-square";
+  }
+
+  // Save view state for persistence across restarts.
+  getState(): { conversationId?: string } {
+    return {
+      conversationId: this.conversationManager?.getCurrentConversation()?.id,
+    };
+  }
+
+  // Restore view state after restart.
+  async setState(state: { conversationId?: string }, result: ViewStateResult): Promise<void> {
+    if (state.conversationId) {
+      // Will be loaded in onOpen after initialization.
+      (this as any).pendingConversationId = state.conversationId;
+    }
   }
 
   async onOpen() {
@@ -65,14 +93,27 @@ export class ChatView extends ItemView {
     // Initialize conversation manager.
     await this.conversationManager.initialize();
 
-    // Load last conversation if any.
-    const conversations = await this.conversationManager.getConversations();
-    if (conversations.length > 0 && this.conversationManager.getCurrentConversation()) {
-      this.messages = this.conversationManager.getDisplayMessages();
-      // Restore session ID if available.
-      const currentConv = this.conversationManager.getCurrentConversation();
-      if (currentConv?.sessionId) {
-        this.agentController.setSessionId(currentConv.sessionId);
+    // Check for pending conversation ID from state restoration.
+    const pendingId = (this as any).pendingConversationId;
+    if (pendingId) {
+      const conv = await this.conversationManager.loadConversation(pendingId);
+      if (conv) {
+        this.messages = this.conversationManager.getDisplayMessages();
+        if (conv.sessionId) {
+          this.agentController.setSessionId(conv.sessionId);
+        }
+      }
+      delete (this as any).pendingConversationId;
+    } else {
+      // Load last conversation if any.
+      const conversations = await this.conversationManager.getConversations();
+      if (conversations.length > 0 && this.conversationManager.getCurrentConversation()) {
+        this.messages = this.conversationManager.getDisplayMessages();
+        // Restore session ID if available.
+        const currentConv = this.conversationManager.getCurrentConversation();
+        if (currentConv?.sessionId) {
+          this.agentController.setSessionId(currentConv.sessionId);
+        }
       }
     }
 
@@ -116,11 +157,19 @@ export class ChatView extends ItemView {
   private renderHeader() {
     this.headerEl = this.contentEl.createDiv({ cls: "claude-code-header" });
 
-    // Title section.
-    const titleEl = this.headerEl.createDiv({ cls: "claude-code-header-title" });
-    const iconEl = titleEl.createSpan();
+    // Title section with conversation picker.
+    const titleSection = this.headerEl.createDiv({ cls: "claude-code-header-title" });
+    const iconEl = titleSection.createSpan();
     setIcon(iconEl, "bot");
-    titleEl.createSpan({ text: "Claude Code" });
+
+    // Conversation picker dropdown.
+    const convPicker = titleSection.createDiv({ cls: "claude-code-conv-picker" });
+    const conv = this.conversationManager.getCurrentConversation();
+    const titleEl = convPicker.createSpan({ cls: "claude-code-conv-title" });
+    titleEl.setText(conv?.title || "New Conversation");
+    const chevron = convPicker.createSpan({ cls: "claude-code-conv-chevron" });
+    setIcon(chevron, "chevron-down");
+    convPicker.addEventListener("click", (e) => this.showConversationPicker(e));
 
     // Actions section.
     const actionsEl = this.headerEl.createDiv({ cls: "claude-code-header-actions" });
@@ -129,6 +178,11 @@ export class ChatView extends ItemView {
     const newButton = actionsEl.createEl("button", { attr: { "aria-label": "New Conversation" } });
     setIcon(newButton, "plus");
     newButton.addEventListener("click", () => this.startNewConversation());
+
+    // New window button.
+    const newWindowButton = actionsEl.createEl("button", { attr: { "aria-label": "New Chat Window" } });
+    setIcon(newWindowButton, "plus-square");
+    newWindowButton.addEventListener("click", (e) => this.showNewWindowMenu(e));
 
     // History button.
     const historyButton = actionsEl.createEl("button", { attr: { "aria-label": "History" } });
@@ -142,6 +196,105 @@ export class ChatView extends ItemView {
       (this.app as any).setting.open();
       (this.app as any).setting.openTabById("obsidian-claude-code");
     });
+  }
+
+  private showNewWindowMenu(e: MouseEvent) {
+    const menu = new Menu();
+    const currentCount = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE).length;
+    const maxWindows = 5;
+
+    if (currentCount >= maxWindows) {
+      menu.addItem((item) => {
+        item.setTitle(`Max ${maxWindows} windows reached`)
+          .setDisabled(true);
+      });
+    } else {
+      menu.addItem((item) => {
+        item.setTitle(`New tab (${currentCount}/${maxWindows})`)
+          .setIcon("layout-list")
+          .onClick(() => this.plugin.createNewChatView("tab"));
+      });
+
+      menu.addItem((item) => {
+        item.setTitle("Split right")
+          .setIcon("separator-vertical")
+          .onClick(() => this.plugin.createNewChatView("split-right"));
+      });
+
+      menu.addItem((item) => {
+        item.setTitle("Split down")
+          .setIcon("separator-horizontal")
+          .onClick(() => this.plugin.createNewChatView("split-down"));
+      });
+    }
+
+    menu.showAtMouseEvent(e);
+  }
+
+  private async showConversationPicker(e: MouseEvent) {
+    const menu = new Menu();
+    const conversations = await this.conversationManager.getConversations();
+    const currentId = this.conversationManager.getCurrentConversation()?.id;
+
+    // List recent conversations (limit to 10).
+    const recent = conversations.slice(0, 10);
+    for (const conv of recent) {
+      menu.addItem((item) => {
+        item.setTitle(conv.title || "Untitled")
+          .setIcon(conv.id === currentId ? "check" : "message-square")
+          .onClick(async () => {
+            await this.loadConversation(conv.id);
+          });
+      });
+    }
+
+    if (recent.length > 0) {
+      menu.addSeparator();
+    }
+
+    menu.addItem((item) => {
+      item.setTitle("New conversation")
+        .setIcon("plus")
+        .onClick(() => this.startNewConversation());
+    });
+
+    menu.addItem((item) => {
+      item.setTitle("View all history...")
+        .setIcon("history")
+        .onClick(() => this.showHistory());
+    });
+
+    menu.showAtMouseEvent(e);
+  }
+
+  private async loadConversation(id: string) {
+    const conv = await this.conversationManager.loadConversation(id);
+    if (conv) {
+      this.messages = this.conversationManager.getDisplayMessages();
+      if (conv.sessionId) {
+        this.agentController.setSessionId(conv.sessionId);
+      }
+      this.messagesContainerEl.empty();
+      this.messageList = new MessageList(this.messagesContainerEl, this.plugin);
+      if (this.messages.length === 0) {
+        this.renderEmptyState();
+      } else {
+        this.messageList.render(this.messages);
+        this.scrollToBottom();
+      }
+      // Update tab title and header.
+      (this.leaf as any).updateHeader?.();
+      this.updateConversationDisplay();
+    }
+  }
+
+  private updateConversationDisplay() {
+    // Update the conversation title in the header.
+    const titleEl = this.headerEl.querySelector(".claude-code-conv-title");
+    if (titleEl) {
+      const conv = this.conversationManager.getCurrentConversation();
+      titleEl.textContent = conv?.title || "New Conversation";
+    }
   }
 
   private renderMessagesArea() {
@@ -420,6 +573,10 @@ export class ChatView extends ItemView {
     this.isStreaming = false;
     this.streamingMessageId = null;
     this.chatInput.updateState();
+
+    // Update tab title and header.
+    (this.leaf as any).updateHeader?.();
+    this.updateConversationDisplay();
   }
 
   private async showHistory() {
@@ -443,6 +600,9 @@ export class ChatView extends ItemView {
             this.messageList.render(this.messages);
             this.scrollToBottom();
           }
+          // Update tab title and header.
+          (this.leaf as any).updateHeader?.();
+          this.updateConversationDisplay();
         }
       },
       async (id) => {

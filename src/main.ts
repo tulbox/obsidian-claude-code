@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Plugin, WorkspaceLeaf, Notice, ItemView } from "obsidian";
 import { ClaudeCodeSettings, DEFAULT_SETTINGS, CHAT_VIEW_TYPE } from "./types";
 import { ChatView } from "./views/ChatView";
 import { ClaudeCodeSettingTab } from "./settings/SettingsTab";
@@ -6,6 +6,7 @@ import { logger } from "./utils/Logger";
 
 export default class ClaudeCodePlugin extends Plugin {
   settings: ClaudeCodeSettings = DEFAULT_SETTINGS;
+  private readonly MAX_CHAT_WINDOWS = 5;
 
   async onload() {
     await this.loadSettings();
@@ -47,6 +48,15 @@ export default class ClaudeCodePlugin extends Plugin {
       name: "New Conversation",
       callback: () => {
         this.startNewConversation();
+      },
+    });
+
+    // Add command to open new chat window.
+    this.addCommand({
+      id: "new-chat-window",
+      name: "New Chat Window",
+      callback: () => {
+        this.createNewChatView("tab");
       },
     });
 
@@ -95,7 +105,44 @@ export default class ClaudeCodePlugin extends Plugin {
     }
 
     // Create new leaf in right sidebar.
-    const leaf = this.app.workspace.getRightLeaf(false);
+    await this.createNewChatView("tab");
+  }
+
+  // Create a new chat view window.
+  async createNewChatView(mode: "tab" | "split-right" | "split-down" = "tab") {
+    // Check window limit.
+    const existingLeaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+    if (existingLeaves.length >= this.MAX_CHAT_WINDOWS) {
+      new Notice(`Maximum ${this.MAX_CHAT_WINDOWS} chat windows allowed`);
+      return;
+    }
+
+    let leaf: WorkspaceLeaf | null = null;
+
+    switch (mode) {
+      case "tab":
+        leaf = this.app.workspace.getRightLeaf(false);
+        break;
+      case "split-right": {
+        const activeLeaf = this.app.workspace.getActiveViewOfType(ItemView)?.leaf;
+        if (activeLeaf) {
+          leaf = this.app.workspace.createLeafBySplit(activeLeaf, "vertical");
+        } else {
+          leaf = this.app.workspace.getRightLeaf(false);
+        }
+        break;
+      }
+      case "split-down": {
+        const currentLeaf = this.app.workspace.getActiveViewOfType(ItemView)?.leaf;
+        if (currentLeaf) {
+          leaf = this.app.workspace.createLeafBySplit(currentLeaf, "horizontal");
+        } else {
+          leaf = this.app.workspace.getRightLeaf(false);
+        }
+        break;
+      }
+    }
+
     if (leaf) {
       await leaf.setViewState({
         type: CHAT_VIEW_TYPE,
