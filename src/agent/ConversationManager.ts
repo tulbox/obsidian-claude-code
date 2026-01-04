@@ -2,6 +2,8 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 import type ClaudeCodePlugin from "../main";
 import { Conversation, ChatMessage } from "../types";
 import { logger } from "../utils/Logger";
+import { generateTitleWithHaiku } from "../utils/formatting";
+import { findClaudeExecutable } from "../utils/claudeExecutable";
 
 // Storage directory name within the vault.
 const STORAGE_DIR = ".obsidian-claude-code";
@@ -199,9 +201,10 @@ export class ConversationManager {
     this.currentConversation!.messageCount++;
     this.currentConversation!.updatedAt = Date.now();
 
-    // Auto-generate title from first user message.
-    if (this.currentConversation!.messageCount === 1 && displayMessage.role === "user") {
-      this.currentConversation!.title = this.generateTitle(displayMessage.content);
+    // Auto-generate title after first assistant response using Haiku.
+    // Wait until messageCount === 2 (first user + first assistant).
+    if (this.currentConversation!.messageCount === 2 && displayMessage.role === "assistant") {
+      await this.generateConversationTitle();
     }
 
     logger.debug("ConversationManager", "Saving conversation");
@@ -333,6 +336,12 @@ export class ConversationManager {
     targetConv.messageCount++;
     targetConv.updatedAt = Date.now();
 
+    // Auto-generate title after first assistant response using Haiku.
+    // Wait until messageCount === 2 (first user + first assistant).
+    if (targetConv.messageCount === 2 && displayMessage.role === "assistant") {
+      await this.generateConversationTitleFor(targetConv);
+    }
+
     await this.saveConversation(targetConv);
     await this.updateIndexEntry(targetConv);
     logger.debug("ConversationManager", "addMessageToConversation completed", { conversationId });
@@ -385,9 +394,71 @@ export class ConversationManager {
     return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   }
 
-  // Generate a title from message content.
-  private generateTitle(content: string): string {
-    // Take first 50 chars of first line.
+  /**
+   * Generate a title for the current conversation using Claude Haiku.
+   *
+   * This method is called automatically after the first assistant response
+   * (when messageCount === 2), providing enough context for a meaningful title.
+   *
+   * If Haiku is unavailable or fails, falls back to simple title generation
+   * (truncating the first line of the user's message to 50 characters).
+   */
+  private async generateConversationTitle() {
+    if (!this.currentConversation) return;
+    await this.generateConversationTitleFor(this.currentConversation);
+  }
+
+  /**
+   * Generate a title for a specific conversation using Claude Haiku.
+   * Used by both addMessage() and addMessageToConversation().
+   */
+  private async generateConversationTitleFor(conversation: StoredConversation) {
+    const messages = conversation.displayMessages;
+    if (messages.length < 2) return;
+
+    // Get first user and assistant messages.
+    const firstUser = messages.find((m) => m.role === "user");
+    const firstAssistant = messages.find((m) => m.role === "assistant");
+
+    if (!firstUser || !firstAssistant) {
+      logger.debug("ConversationManager", "Missing user or assistant message for title generation");
+      return;
+    }
+
+    logger.debug("ConversationManager", "Generating title with Haiku", { conversationId: conversation.id });
+
+    try {
+      // Get API key, Claude executable path, and vault path from plugin.
+      const apiKey = this.plugin.settings.apiKey || process.env.ANTHROPIC_API_KEY;
+      const claudeExecutable = findClaudeExecutable();
+      const vaultPath = (this.plugin.app.vault.adapter as any).basePath || process.cwd();
+
+      // Try to generate title with Haiku.
+      const haikuTitle = await generateTitleWithHaiku(
+        firstUser.content,
+        firstAssistant.content,
+        apiKey,
+        claudeExecutable,
+        vaultPath
+      );
+
+      if (haikuTitle) {
+        conversation.title = haikuTitle;
+        logger.info("ConversationManager", "Generated title with Haiku", { title: haikuTitle });
+      } else {
+        // Fall back to simple title generation.
+        conversation.title = this.generateSimpleTitle(firstUser.content);
+        logger.debug("ConversationManager", "Fell back to simple title generation");
+      }
+    } catch (error) {
+      logger.warn("ConversationManager", "Failed to generate title with Haiku", { error: String(error) });
+      // Fall back to simple title generation.
+      conversation.title = this.generateSimpleTitle(firstUser.content);
+    }
+  }
+
+  // Generate a simple title from message content (fallback method).
+  private generateSimpleTitle(content: string): string {
     const firstLine = content.split("\n")[0];
     if (firstLine.length <= 50) {
       return firstLine;

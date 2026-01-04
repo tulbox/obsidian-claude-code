@@ -1,9 +1,11 @@
 import { query, SDKMessage, SDKAssistantMessage, SDKResultMessage, SDKSystemMessage, SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
 import { App } from "obsidian";
+import * as path from "path";
 import type ClaudeCodePlugin from "../main";
 import { ChatMessage, ToolCall, AgentEvents, SubagentProgress, ErrorType } from "../types";
 import { createObsidianMcpServer, ObsidianMcpServerInstance } from "./ObsidianMcpServer";
 import { logger } from "../utils/Logger";
+import { requireClaudeExecutable } from "../utils/claudeExecutable";
 
 // Type for content blocks from the SDK.
 interface TextBlock {
@@ -147,11 +149,10 @@ export class AgentController {
       logger.info("AgentController", "Auth status", { hasOAuthToken, hasApiKey, hasBaseUrl, model: this.plugin.settings.model, cwd: this.vaultPath });
 
       // Find the Claude Code executable path.
-      const claudeExecutable = this.findClaudeExecutable();
+      const claudeExecutable = requireClaudeExecutable();
 
       // Ensure nvm's node is in PATH for the subprocess.
       // The claude CLI is a node script (#!/usr/bin/env node) so node must be findable.
-      const path = require("path");
       const claudeDir = path.dirname(claudeExecutable);
       if (env.PATH && !env.PATH.includes(claudeDir)) {
         env.PATH = `${claudeDir}:${env.PATH}`;
@@ -706,70 +707,5 @@ export class AgentController {
   // Generate a unique message ID.
   private generateId(): string {
     return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-  }
-
-  // Find the Claude Code executable path.
-  private findClaudeExecutable(): string {
-    const fs = require("fs");
-    const path = require("path");
-    const os = require("os");
-    const homeDir = os.homedir();
-
-    // Common locations to check.
-    const possiblePaths = [
-      // User's npm global bin from NVM_BIN env var.
-      process.env.NVM_BIN ? `${process.env.NVM_BIN}/claude` : null,
-
-      // Common nvm paths - check multiple node versions.
-      `${homeDir}/.nvm/versions/node/v20.11.1/bin/claude`,
-      `${homeDir}/.nvm/versions/node/v22.0.0/bin/claude`,
-      `${homeDir}/.nvm/versions/node/v21.0.0/bin/claude`,
-      `${homeDir}/.nvm/versions/node/v18.0.0/bin/claude`,
-
-      // npm global without nvm.
-      `${homeDir}/.npm-global/bin/claude`,
-      `${homeDir}/npm/bin/claude`,
-
-      // Standard npm global.
-      "/usr/local/bin/claude",
-
-      // Homebrew on macOS.
-      "/opt/homebrew/bin/claude",
-
-      // Linux global.
-      "/usr/bin/claude",
-    ].filter(Boolean) as string[];
-
-    // Also check all nvm versions dynamically.
-    const nvmDir = `${homeDir}/.nvm/versions/node`;
-    try {
-      if (fs.existsSync(nvmDir)) {
-        const versions = fs.readdirSync(nvmDir);
-        for (const ver of versions) {
-          const claudePath = path.join(nvmDir, ver, "bin", "claude");
-          if (!possiblePaths.includes(claudePath)) {
-            possiblePaths.push(claudePath);
-          }
-        }
-      }
-    } catch (e) {
-      // Ignore.
-    }
-
-    // Check if any exist.
-    for (const p of possiblePaths) {
-      try {
-        if (fs.existsSync(p)) {
-          logger.info("AgentController", "Found Claude executable", { path: p });
-          return p;
-        }
-      } catch (e) {
-        // Ignore.
-      }
-    }
-
-    // Log all paths we checked.
-    logger.error("AgentController", "Could not find Claude executable", { checkedPaths: possiblePaths });
-    throw new Error("Claude Code CLI not found. Please install it with: npm install -g @anthropic-ai/claude-code");
   }
 }

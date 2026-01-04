@@ -3,6 +3,10 @@
  * Extracted for testability.
  */
 
+import * as path from "path";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { logger } from "./Logger";
+
 /**
  * Format a duration in milliseconds to a human-readable string.
  */
@@ -27,6 +31,7 @@ export function truncateText(text: string, maxLength: number): string {
 
 /**
  * Generate a title from content (first line, truncated to 50 chars).
+ * This is the fallback method when Haiku title generation is not available or fails.
  */
 export function generateTitle(content: string): string {
   const firstLine = content.split("\n")[0];
@@ -34,6 +39,121 @@ export function generateTitle(content: string): string {
     return firstLine;
   }
   return firstLine.slice(0, 47) + "...";
+}
+
+/**
+ * Generate a conversation title using Claude Haiku based on the conversation content.
+ * @param userMessage The first user message content
+ * @param assistantMessage The first assistant response content
+ * @param apiKey The Anthropic API key (from settings or env)
+ * @param claudeExecutable Path to the Claude CLI executable
+ * @param cwd Working directory for the SDK (vault path)
+ * @returns A promise that resolves to a concise title, or null if generation fails
+ */
+export async function generateTitleWithHaiku(
+  userMessage: string,
+  assistantMessage: string,
+  apiKey?: string,
+  claudeExecutable?: string,
+  cwd?: string
+): Promise<string | null> {
+  try {
+    // Check for any form of authentication (API key or OAuth token).
+    const hasApiKey = !!(apiKey || process.env.ANTHROPIC_API_KEY);
+    const hasOAuthToken = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+    if (!hasApiKey && !hasOAuthToken) {
+      logger.debug("TitleGeneration", "No authentication available for Haiku title generation");
+      return null;
+    }
+
+    // Build environment - include full process.env for OAuth support.
+    const env: Record<string, string | undefined> = { ...process.env };
+    // Override API key if explicitly provided in settings.
+    if (apiKey) {
+      env.ANTHROPIC_API_KEY = apiKey;
+    }
+
+    // Add claude executable path to PATH if provided.
+    if (claudeExecutable) {
+      const claudeDir = path.dirname(claudeExecutable);
+      if (env.PATH && !env.PATH.includes(claudeDir)) {
+        env.PATH = `${claudeDir}:${env.PATH}`;
+      } else if (!env.PATH) {
+        env.PATH = claudeDir;
+      }
+    }
+
+    // Limit messages to avoid excessive tokens
+    const userPreview = userMessage.slice(0, 500);
+    const assistantPreview = assistantMessage.slice(0, 500);
+    
+    // Create a simple prompt for title generation
+    const titlePrompt = `Generate a concise title (max 50 characters) for this conversation. Reply with ONLY the title:
+
+User: ${userPreview}
+Assistant: ${assistantPreview}`;
+
+    logger.debug("TitleGeneration", "Calling Haiku for title generation");
+
+    let generatedTitle = "";
+
+    // Create an AbortController for this request.
+    const abortController = new AbortController();
+
+    // Use the Agent SDK query function with Haiku model.
+    for await (const message of query({
+      prompt: titlePrompt,
+      options: {
+        abortController,
+        cwd,
+        env,
+        pathToClaudeCodeExecutable: claudeExecutable,
+        model: "haiku",
+        // Minimal settings for quick title generation.
+        maxBudgetUsd: 0.05, // Very low budget for just a title.
+        // No tools needed for title generation.
+        tools: [],
+        systemPrompt: "Generate a concise title. Reply with only the title text.",
+      },
+    })) {
+      // Extract text from assistant messages
+      if (message.type === "assistant") {
+        const content = message.message.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "text") {
+              generatedTitle += block.text;
+            }
+          }
+        }
+      } else if (message.type === "result" && message.subtype === "success") {
+        // Query completed successfully
+        break;
+      } else if (message.type === "result") {
+        // Query failed
+        logger.warn("TitleGeneration", "Haiku query failed", { subtype: message.subtype });
+        return null;
+      }
+    }
+
+    // Clean up and validate the title
+    const title = generatedTitle.trim();
+    if (!title) {
+      logger.debug("TitleGeneration", "Haiku returned empty title");
+      return null;
+    }
+
+    // Ensure it's not too long
+    const finalTitle = title.length <= 50 ? title : title.slice(0, 47) + "...";
+    
+    logger.debug("TitleGeneration", "Generated title with Haiku", { title: finalTitle });
+    return finalTitle;
+
+  } catch (error) {
+    logger.warn("TitleGeneration", "Failed to generate title with Haiku", { error: String(error) });
+    return null;
+  }
 }
 
 /**
