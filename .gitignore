@@ -15,9 +15,6 @@ bun.lock
 *.swo
 .DS_Store
 
-# Claude Code local files
-CLAUDE.md
-
 # Debug logs
 debug.log
 *.log
