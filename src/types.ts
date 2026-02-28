@@ -18,11 +18,18 @@ export interface ClaudeCodeSettings {
   // Persistent permission approvals (tools that are always allowed).
   alwaysAllowedTools: string[];
 
+  // Allowed Obsidian command IDs for execute_command tool.
+  allowedCommands: string[];
+
   // UI Preferences.
   sidebarWidth: number;
 
   // Limits.
   maxBudgetPerSession: number;
+
+  // Security.
+  apiKeyEncrypted: boolean;
+  allowLocalBaseUrl: boolean;
 
   // Agent SDK settings.
   maxTurns: number;
@@ -34,11 +41,27 @@ export const DEFAULT_SETTINGS: ClaudeCodeSettings = {
   baseUrl: "",
   model: "sonnet",
   autoApproveVaultReads: true,
-  autoApproveVaultWrites: true,  // Default to auto-approve for better UX.
+  autoApproveVaultWrites: false,  // Require confirmation for writes (security default).
   requireBashApproval: true,
   alwaysAllowedTools: [],
+  allowedCommands: [
+    "editor:toggle-bold",
+    "editor:toggle-italics",
+    "editor:toggle-strikethrough",
+    "editor:toggle-highlight",
+    "editor:toggle-code",
+    "editor:toggle-blockquote",
+    "editor:toggle-bullet-list",
+    "editor:toggle-numbered-list",
+    "editor:toggle-checklist-status",
+    "app:go-back",
+    "app:go-forward",
+    "file-explorer:reveal-active-file",
+  ],
   sidebarWidth: 400,
   maxBudgetPerSession: 10.0,
+  apiKeyEncrypted: false,
+  allowLocalBaseUrl: false,
   maxTurns: 50,
 };
 

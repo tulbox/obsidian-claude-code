@@ -36,7 +36,7 @@ Then enable the plugin: Obsidian Settings → Community Plugins → obsidian-cla
 
 The plugin supports three authentication methods.
 
-**API Key in Settings.** The simplest option. Open Settings → Claude Code and enter your Anthropic API key. The key is stored locally in Obsidian's plugin data directory.
+**API Key in Settings.** The simplest option. Open Settings → Claude Code and enter your Anthropic API key. The key is stored locally in Obsidian's plugin data directory and encrypted with OS keychain APIs when available.
 
 **Environment Variable.** Set `ANTHROPIC_API_KEY` in your shell environment. The plugin reads it automatically.
 
@@ -65,11 +65,11 @@ Claude has access to all built-in Claude Code tools: Read, Write, Edit, Bash, Gr
 The plugin also exposes Obsidian-specific tools through an MCP server:
 
 - `open_file` — Open a file in the Obsidian editor
-- `execute_command` — Run any Obsidian command
+- `execute_command` — Run allowlisted Obsidian commands (with confirmation)
 - `show_notice` — Display a notification
 - `get_active_file` — Get info about the current file
 - `list_commands` — Discover available commands
-- `create_note` — Create new notes
+- `create_note` — Create new notes (with confirmation)
 - `reveal_in_explorer` — Show a file in the file explorer
 - `get_vault_stats` — Query vault statistics
 - `get_recent_files` — List recently modified files
@@ -98,6 +98,15 @@ Conversations are stored in `.obsidian-claude-code/` at your vault root:
 ```
 
 Add this directory to `.gitignore` if you don't want to sync conversation history.
+
+## Bash Permission Audit
+
+- Persistent tool approvals: Settings -> Claude Code -> Always Allowed Tools.
+- `Bash` is session-only and is never saved there.
+- If an old install had `Bash` in saved approvals, it is removed on plugin load.
+- Session approvals are in-memory only (cleared on plugin reload/restart).
+- Raw settings live at `.obsidian/plugins/obsidian-claude-code/data.json` (`alwaysAllowedTools` field).
+- Localhost custom API base URLs require enabling `Developer Mode (local base URL)` in settings.
 
 ## Development
 

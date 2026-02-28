@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type ClaudeCodePlugin from "../main";
+import { isEncryptionAvailable } from "../utils/safeStorage";
 
 export class ClaudeCodeSettingTab extends PluginSettingTab {
   plugin: ClaudeCodePlugin;
@@ -7,6 +8,26 @@ export class ClaudeCodeSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: ClaudeCodePlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  // Validate base URL: HTTPS only. Localhost requires developer mode.
+  static validateBaseUrl(url: string, allowLocalBaseUrl = false): string | null {
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "https:") return "Only HTTPS URLs are allowed";
+      const isLocalhost = parsed.hostname === "localhost"
+        || parsed.hostname === "127.0.0.1"
+        || parsed.hostname === "::1";
+      if (!allowLocalBaseUrl && isLocalhost) {
+        return "Localhost URLs require Developer Mode to be enabled";
+      }
+      return null;
+    } catch {
+      return "Invalid URL format";
+    }
   }
 
   display(): void {
@@ -56,6 +77,22 @@ export class ClaudeCodeSettingTab extends PluginSettingTab {
         }
       });
 
+    // Encryption status for API key.
+    if (this.plugin.settings.apiKey) {
+      const encStatusEl = containerEl.createDiv({ cls: "claude-code-encryption-status" });
+      if (isEncryptionAvailable()) {
+        encStatusEl.createEl("p", {
+          text: "API key is encrypted via OS keychain (Electron safeStorage).",
+          cls: "mod-success",
+        });
+      } else {
+        encStatusEl.createEl("p", {
+          text: "Warning: API key is stored in plaintext. OS keychain encryption is not available on this system.",
+          cls: "mod-warning",
+        });
+      }
+    }
+
     // Check for environment variables.
     const hasEnvBaseUrl = !!process.env.ANTHROPIC_BASE_URL;
 
@@ -71,10 +108,53 @@ export class ClaudeCodeSettingTab extends PluginSettingTab {
           .setPlaceholder(hasEnvBaseUrl ? "(using env var)" : "https://api.anthropic.com")
           .setValue(this.plugin.settings.baseUrl)
           .onChange(async (value) => {
+            if (value) {
+              const error = ClaudeCodeSettingTab.validateBaseUrl(
+                value,
+                this.plugin.settings.allowLocalBaseUrl
+              );
+              if (error) {
+                // Show validation error but still save (user may be in-progress typing).
+                text.inputEl.style.borderColor = "var(--text-error)";
+                text.inputEl.title = error;
+                return;
+              }
+              text.inputEl.style.borderColor = "";
+              text.inputEl.title = "";
+            }
             this.plugin.settings.baseUrl = value;
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("Developer Mode (local base URL)")
+      .setDesc("Allow localhost/127.0.0.1 custom API base URLs. Keep disabled unless you trust your local proxy.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.allowLocalBaseUrl).onChange(async (value) => {
+          this.plugin.settings.allowLocalBaseUrl = value;
+
+          const baseUrlError = ClaudeCodeSettingTab.validateBaseUrl(
+            this.plugin.settings.baseUrl,
+            value
+          );
+          if (baseUrlError) {
+            this.plugin.settings.baseUrl = "";
+          }
+
+          await this.plugin.saveSettings();
+          this.display();
+        })
+      );
+
+    // Warning for custom base URLs.
+    if (this.plugin.settings.baseUrl && this.plugin.settings.baseUrl !== "https://api.anthropic.com") {
+      const warningEl = containerEl.createDiv({ cls: "claude-code-base-url-warning" });
+      warningEl.createEl("p", {
+        text: "Warning: All prompts and vault content will be sent to this custom endpoint.",
+        cls: "mod-warning",
+      });
+    }
 
     // Claude Max subscription info.
     const authInfoEl = containerEl.createDiv({ cls: "claude-code-auth-info" });
@@ -127,7 +207,7 @@ export class ClaudeCodeSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Auto-approve vault writes")
-      .setDesc("Automatically allow Claude to create and edit files in your vault")
+      .setDesc("When enabled, Claude can write and edit files in your vault without confirmation. Disabled by default for security.")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.autoApproveVaultWrites).onChange(async (value) => {
           this.plugin.settings.autoApproveVaultWrites = value;
@@ -144,6 +224,32 @@ export class ClaudeCodeSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    // Allowed Obsidian commands for execute_command tool.
+    new Setting(containerEl)
+      .setName("Allowed Obsidian commands")
+      .setDesc("Command IDs that Claude can execute (one per line). Use list_commands to discover IDs.")
+      .addTextArea((textarea) =>
+        textarea
+          .setPlaceholder("editor:toggle-bold\napp:go-back")
+          .setValue((this.plugin.settings.allowedCommands || []).join("\n"))
+          .onChange(async (value) => {
+            this.plugin.settings.allowedCommands = value
+              .split("\n")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
+            await this.plugin.saveSettings();
+          })
+      )
+      .then((setting) => {
+        const textarea = setting.controlEl.querySelector("textarea");
+        if (textarea) {
+          textarea.rows = 6;
+          textarea.style.width = "100%";
+          textarea.style.fontFamily = "monospace";
+          textarea.style.fontSize = "12px";
+        }
+      });
 
     // Always-allowed tools section.
     if (this.plugin.settings.alwaysAllowedTools.length > 0) {

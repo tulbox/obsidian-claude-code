@@ -8,7 +8,7 @@ Uses ChromaDB's DefaultEmbeddingFunction for query embedding.
 Usage:
     python search.py --query "options trading strategies" --n-results 5
     python search.py --query "task automation" --folder "TaskNotes"
-    python search.py --query "earnings" --where "status='open'"
+    python search.py --query "earnings" --tag "investing" --status "open"
 """
 
 import argparse
@@ -33,20 +33,43 @@ except ImportError:
 
 
 DEFAULT_DB_PATH = "/Users/roasbeef/vault/.claude/vault_search/vault.db"
+DEFAULT_VAULT_PATH = "/Users/roasbeef/vault"
 EMBEDDING_DIM = 384
 
 
 def get_embedding_function():
-    """Get the ChromaDB embedding function."""
-    return embedding_functions.DefaultEmbeddingFunction()
+  """Get the ChromaDB embedding function."""
+  return embedding_functions.DefaultEmbeddingFunction()
+
+
+def path_is_within(base: Path, candidate: Path) -> bool:
+    """Return True when candidate is inside base (including base itself)."""
+    try:
+        candidate.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_db_path(db_path: str, vault_path: str) -> Path:
+    """Ensure db_path is inside vault_path."""
+    resolved_db = Path(db_path).resolve()
+    resolved_vault = Path(vault_path).resolve()
+    if not path_is_within(resolved_vault, resolved_db):
+        print("Error: db_path must be within vault directory", file=sys.stderr)
+        sys.exit(1)
+    return resolved_db
 
 
 def search(
     query: str,
     db_path: str,
+    vault_path: str,
     n_results: int = 5,
     folder: str = None,
-    where: str = None
+    status: str = None,
+    tag: str = None,
+    extension: str = None,
 ) -> list[dict]:
     """
     Perform semantic search with optional metadata filtering.
@@ -54,20 +77,24 @@ def search(
     Args:
         query: Search query text
         db_path: Path to sqlite database
+        vault_path: Path to vault root
         n_results: Number of results to return
         folder: Filter by folder prefix
-        where: Additional SQL WHERE clause
+        status: Filter by note status
+        tag: Filter by tag (substring match in tags JSON)
+        extension: Filter by file extension
 
     Returns:
         List of search results with metadata
     """
-    if not Path(db_path).exists():
-        print(f"Error: Database not found: {db_path}")
+    resolved_db = validate_db_path(db_path, vault_path)
+    if not resolved_db.exists():
+        print(f"Error: Database not found: {resolved_db}")
         print("Run: python index.py --rebuild")
         sys.exit(1)
 
     # Connect to database
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(str(resolved_db))
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
@@ -79,22 +106,31 @@ def search(
     # Convert to bytes for sqlite-vec
     query_bytes = struct.pack(f"{len(query_embedding)}f", *query_embedding)
 
-    # Build the query
-    # First, get top chunks by vector similarity
-    # Then join with notes table for metadata filtering
-
-    # Build WHERE clause
+    # Build WHERE clause with parameterized queries (security: no string interpolation).
     where_clauses = []
+    params: list = [query_bytes]  # First param is always the embedding.
     if folder:
-        where_clauses.append(f"n.folder LIKE '{folder}%'")
-    if where:
-        where_clauses.append(f"({where})")
+        where_clauses.append("n.folder LIKE ? || '%'")
+        params.append(folder)
+    if status:
+        where_clauses.append("n.status = ?")
+        params.append(status)
+    if tag:
+        where_clauses.append("n.tags LIKE '%' || ? || '%'")
+        params.append(tag)
+    if extension:
+        where_clauses.append("n.filename LIKE '%.' || ?")
+        params.append(extension)
 
     where_sql = ""
     if where_clauses:
         where_sql = "WHERE " + " AND ".join(where_clauses)
 
-    # Query with vector search and metadata join
+    # If we have metadata filters, fetch more results initially to account for filtering.
+    fetch_limit = n_results * 3 if where_clauses else n_results
+    params.append(fetch_limit)
+
+    # Query with vector search and metadata join.
     sql = f"""
         SELECT
             c.chunk_id,
@@ -125,12 +161,12 @@ def search(
         ORDER BY c.distance
     """
 
-    # If we have metadata filters, we need to fetch more results initially
-    # to account for filtering, then limit at the end
-    fetch_limit = n_results * 3 if where_clauses else n_results
+    # Reorder params: embedding match is first ?, limit is second ?, then filters.
+    # The subquery uses (embedding MATCH ?, LIMIT ?) so those must come first.
+    ordered_params = [params[0], params[-1]] + params[1:-1]
 
     try:
-        cursor = conn.execute(sql, (query_bytes, fetch_limit))
+        cursor = conn.execute(sql, ordered_params)
         rows = cursor.fetchall()
     except sqlite3.Error as e:
         print(f"Error executing search: {e}")
@@ -200,13 +236,26 @@ def main():
         help="Filter by folder prefix"
     )
     parser.add_argument(
-        "--where", "-w",
-        help="SQL WHERE clause for metadata filtering"
+        "--status",
+        help="Filter by note status (e.g., 'open', 'closed')"
+    )
+    parser.add_argument(
+        "--tag", "-t",
+        help="Filter by tag (substring match)"
+    )
+    parser.add_argument(
+        "--extension",
+        help="Filter by file extension (e.g., 'md')"
     )
     parser.add_argument(
         "--db-path",
         default=DEFAULT_DB_PATH,
         help=f"Database path (default: {DEFAULT_DB_PATH})"
+    )
+    parser.add_argument(
+        "--vault-path",
+        default=DEFAULT_VAULT_PATH,
+        help=f"Vault path (default: {DEFAULT_VAULT_PATH})"
     )
     parser.add_argument(
         "--json",
@@ -219,9 +268,12 @@ def main():
     results = search(
         query=args.query,
         db_path=args.db_path,
+        vault_path=args.vault_path,
         n_results=args.n_results,
         folder=args.folder,
-        where=args.where
+        status=args.status,
+        tag=args.tag,
+        extension=args.extension,
     )
 
     if args.json:

@@ -207,7 +207,7 @@ export class ChatInput {
   private handleSend() {
     logger.info("ChatInput", "handleSend called");
     const message = this.textareaEl.value.trim();
-    logger.debug("ChatInput", "Message content", { length: message.length, preview: message.slice(0, 50) });
+    logger.debug("ChatInput", "Message content", { length: message.length });
 
     if (!message) {
       logger.warn("ChatInput", "Empty message, not sending");

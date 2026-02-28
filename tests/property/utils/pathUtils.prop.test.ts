@@ -197,7 +197,9 @@ describe("pathUtils property tests", () => {
     it("should trim whitespace", () => {
       fc.assert(
         fc.property(
-          fc.string({ minLength: 1, maxLength: 30 }),
+          fc.string({ minLength: 1, maxLength: 30 }).filter(
+            (s) => !s.startsWith(" ") && !s.endsWith(" ")
+          ),
           fc.nat({ max: 5 }),
           fc.nat({ max: 5 }),
           (content, leadingSpaces, trailingSpaces) => {

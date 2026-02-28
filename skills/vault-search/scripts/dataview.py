@@ -12,14 +12,51 @@ Usage:
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
 
 DEFAULT_DB_PATH = "/Users/roasbeef/vault/.claude/vault_search/vault.db"
+DEFAULT_VAULT_PATH = "/Users/roasbeef/vault"
 
 
-def execute_query(sql: str, db_path: str) -> tuple[list[str], list[tuple]]:
+FORBIDDEN_SQL_KEYWORDS = [
+    "DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE",
+    "ATTACH", "DETACH", "PRAGMA", "LOAD_EXTENSION",
+]
+
+
+def validate_sql(sql: str) -> None:
+    """Reject SQL containing dangerous keywords (defense-in-depth)."""
+    sql_upper = sql.strip().upper()
+    for keyword in FORBIDDEN_SQL_KEYWORDS:
+        # Use word boundaries to avoid false positives like "updated".
+        if re.search(rf"\b{re.escape(keyword)}\b", sql_upper):
+            print(f"Error: SQL contains forbidden keyword: {keyword}", file=sys.stderr)
+            sys.exit(1)
+
+
+def path_is_within(base: Path, candidate: Path) -> bool:
+    """Return True when candidate is inside base (including base itself)."""
+    try:
+        candidate.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_db_path(db_path: str, vault_path: str) -> Path:
+    """Ensure db_path is inside vault_path."""
+    resolved_db = Path(db_path).resolve()
+    resolved_vault = Path(vault_path).resolve()
+    if not path_is_within(resolved_vault, resolved_db):
+        print("Error: db_path must be within vault directory", file=sys.stderr)
+        sys.exit(1)
+    return resolved_db
+
+
+def execute_query(sql: str, db_path: str, vault_path: str) -> tuple[list[str], list[tuple]]:
     """
     Execute a SQL query and return column names and rows.
 
@@ -30,12 +67,15 @@ def execute_query(sql: str, db_path: str) -> tuple[list[str], list[tuple]]:
     Returns:
         Tuple of (column_names, rows)
     """
-    if not Path(db_path).exists():
-        print(f"Error: Database not found: {db_path}")
+    validate_sql(sql)
+
+    resolved_db = validate_db_path(db_path, vault_path)
+    if not resolved_db.exists():
+        print(f"Error: Database not found: {resolved_db}")
         print("Run: python index.py --rebuild")
         sys.exit(1)
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(str(resolved_db))
 
     try:
         cursor = conn.execute(sql)
@@ -83,13 +123,14 @@ def rows_to_dicts(columns: list[str], rows: list[tuple]) -> list[dict]:
     return [dict(zip(columns, row)) for row in rows]
 
 
-def show_schema(db_path: str):
+def show_schema(db_path: str, vault_path: str):
     """Show the database schema."""
-    if not Path(db_path).exists():
-        print(f"Error: Database not found: {db_path}")
+    resolved_db = validate_db_path(db_path, vault_path)
+    if not resolved_db.exists():
+        print(f"Error: Database not found: {resolved_db}")
         return
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(str(resolved_db))
 
     print("=== Notes Table Schema ===\n")
 
@@ -146,6 +187,11 @@ def main():
         help=f"Database path (default: {DEFAULT_DB_PATH})"
     )
     parser.add_argument(
+        "--vault-path",
+        default=DEFAULT_VAULT_PATH,
+        help=f"Vault path (default: {DEFAULT_VAULT_PATH})"
+    )
+    parser.add_argument(
         "--format", "-f",
         choices=["table", "json"],
         default="table",
@@ -160,14 +206,14 @@ def main():
     args = parser.parse_args()
 
     if args.schema:
-        show_schema(args.db_path)
+        show_schema(args.db_path, args.vault_path)
         return
 
     if not args.sql:
         print("Error: --sql is required (or use --schema to see available columns)")
         sys.exit(1)
 
-    columns, rows = execute_query(args.sql, args.db_path)
+    columns, rows = execute_query(args.sql, args.db_path, args.vault_path)
 
     if args.format == "json":
         results = rows_to_dicts(columns, rows)

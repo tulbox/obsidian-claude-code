@@ -38,18 +38,21 @@ python scripts/search.py --query "options trading strategies" --n-results 5
 python scripts/search.py --query "earnings analysis" --folder "investing"
 
 # Filter by metadata
-python scripts/search.py --query "task automation" --where "status='open'"
+python scripts/search.py --query "task automation" --status "open" --tag "automation"
 
 # Combined: semantic + metadata
-python scripts/search.py --query "portfolio risk" --where "folder LIKE 'investing%' AND status='open'"
+python scripts/search.py --query "portfolio risk" --folder "investing" --status "open"
 ```
 
 **Arguments:**
 - `--query` (required): Search query text
 - `--n-results`: Number of results (default: 5)
 - `--folder`: Filter by folder prefix
-- `--where`: SQL WHERE clause for metadata filtering
+- `--status`: Filter by note status
+- `--tag`: Filter by tag substring
+- `--extension`: Filter by file extension
 - `--db-path`: Database path (default: .claude/vault_search/vault.db)
+- `--vault-path`: Vault root (used to validate db path boundary)
 
 **Output:**
 - Human-readable results with snippets
@@ -84,6 +87,7 @@ python scripts/dataview.py --sql "SELECT DISTINCT n.path, n.title
 **Arguments:**
 - `--sql` (required): SQL query to execute
 - `--db-path`: Database path (default: .claude/vault_search/vault.db)
+- `--vault-path`: Vault root (used to validate db path boundary)
 - `--format`: Output format: "table" or "json" (default: table)
 
 **Available columns:**

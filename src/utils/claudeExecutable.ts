@@ -68,10 +68,16 @@ export function findClaudeExecutable(): string | undefined {
     // Ignore errors reading nvm directory.
   }
 
-  // Check if any exist.
+  // Check if any exist with permission validation.
   for (const p of possiblePaths) {
     try {
       if (fs.existsSync(p)) {
+        // Security: reject world-writable or group-writable executables.
+        const stats = fs.statSync(p);
+        if ((stats.mode & 0o022) !== 0) {
+          logger.warn("ClaudeExecutable", "Rejecting world/group-writable executable", { path: p, mode: stats.mode.toString(8) });
+          continue;
+        }
         logger.info("ClaudeExecutable", "Found Claude executable", { path: p });
         return p;
       }

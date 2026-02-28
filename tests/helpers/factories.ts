@@ -16,9 +16,11 @@ export function createMockPlugin(overrides?: Partial<MockPlugin>): MockPlugin {
     enableSkills: true,
     // AgentController settings.
     maxBudgetPerSession: 5.0,
-    autoApproveVaultWrites: true,
-    requireBashApproval: false,
+    autoApproveVaultWrites: false,
+    requireBashApproval: true,
     alwaysAllowedTools: [],
+    allowedCommands: ["editor:toggle-bold"],
+    allowLocalBaseUrl: false,
   };
 
   // Extract settings from overrides to merge separately.
@@ -56,6 +58,8 @@ export interface MockPluginSettings {
   autoApproveVaultWrites: boolean;
   requireBashApproval: boolean;
   alwaysAllowedTools: string[];
+  allowedCommands: string[];
+  allowLocalBaseUrl: boolean;
 }
 
 export interface MockPlugin {

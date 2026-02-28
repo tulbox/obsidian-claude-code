@@ -21,6 +21,9 @@ const obsidianUiTools = [
   "mcp__obsidian__open_file",
   "mcp__obsidian__show_notice",
   "mcp__obsidian__reveal_in_explorer",
+];
+
+const controlledObsidianTools = [
   "mcp__obsidian__execute_command",
   "mcp__obsidian__create_note",
 ];
@@ -142,8 +145,12 @@ describe("AgentController", () => {
       expect(obsidianUiTools).toContain("mcp__obsidian__show_notice");
     });
 
-    it("should include create_note in UI tools", () => {
-      expect(obsidianUiTools).toContain("mcp__obsidian__create_note");
+    it("should not include create_note in auto-approved UI tools", () => {
+      expect(obsidianUiTools).not.toContain("mcp__obsidian__create_note");
+    });
+
+    it.each(controlledObsidianTools)("should keep controlled tool out of UI auto-approve list: %s", (toolName) => {
+      expect(obsidianUiTools).not.toContain(toolName);
     });
   });
 
@@ -181,9 +188,9 @@ describe("AgentController", () => {
   });
 
   describe("permission handling - always allowed tools", () => {
-    it("should auto-approve tools in alwaysAllowedTools list", () => {
-      mockPlugin.settings.alwaysAllowedTools = ["Bash", "Write"];
-      const isAlwaysAllowed = mockPlugin.settings.alwaysAllowedTools.includes("Bash");
+    it("should auto-approve non-session-only tools in alwaysAllowedTools list", () => {
+      mockPlugin.settings.alwaysAllowedTools = ["Write"];
+      const isAlwaysAllowed = mockPlugin.settings.alwaysAllowedTools.includes("Write");
       expect(isAlwaysAllowed).toBe(true);
     });
 
@@ -192,9 +199,9 @@ describe("AgentController", () => {
       expect(mockPlugin.settings.alwaysAllowedTools).toEqual([]);
     });
 
-    it("should persist tool to alwaysAllowedTools on 'always' choice", async () => {
+    it("should persist non-Bash tools to alwaysAllowedTools on 'always' choice", async () => {
       mockPlugin.settings.alwaysAllowedTools = [];
-      const toolName = "Bash";
+      const toolName = "Write";
 
       // Simulate "always" choice.
       if (!mockPlugin.settings.alwaysAllowedTools.includes(toolName)) {
@@ -202,7 +209,7 @@ describe("AgentController", () => {
         await mockPlugin.saveSettings();
       }
 
-      expect(mockPlugin.settings.alwaysAllowedTools).toContain("Bash");
+      expect(mockPlugin.settings.alwaysAllowedTools).toContain("Write");
       expect(mockPlugin.saveSettings).toHaveBeenCalled();
     });
   });

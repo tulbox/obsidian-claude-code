@@ -1,10 +1,7 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { App, Notice, TFile, TFolder, Command } from "obsidian";
-import { execFile } from "child_process";
-import { promisify } from "util";
-
-const execFileAsync = promisify(execFile);
+import * as nodePath from "path";
 
 // Type for the MCP server instance.
 export type ObsidianMcpServerInstance = ReturnType<typeof createSdkMcpServer>;
@@ -158,48 +155,8 @@ export function createObsidianMcpServer(
         }
       ),
 
-      // Rebuild the vault search index.
-      tool(
-        "rebuild_vault_index",
-        "Rebuild the semantic search index for the vault. Use when search seems stale or after bulk changes to notes.",
-        {
-          force: z
-            .boolean()
-            .optional()
-            .describe("Force full rebuild (default: false, incremental)"),
-          stats: z
-            .boolean()
-            .optional()
-            .describe("Only show index statistics without rebuilding"),
-        },
-        async (args) => {
-          const pythonPath = `${vaultPath}/.claude/venv/bin/python`;
-          const scriptPath = `${vaultPath}/.claude/skills/vault-search/scripts/index.py`;
-
-          const scriptArgs = ["--vault-path", vaultPath];
-          if (args.force) scriptArgs.push("--rebuild");
-          if (args.stats) scriptArgs.push("--stats");
-
-          try {
-            const { stdout, stderr } = await execFileAsync(pythonPath, [
-              scriptPath,
-              ...scriptArgs,
-            ]);
-            return {
-              content: [{ type: "text" as const, text: stdout || stderr }],
-            };
-          } catch (error: any) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Error: ${error.stderr || error.message}`,
-                },
-              ],
-            };
-          }
-        }
-      ),
+      // rebuild_vault_index removed (security: execFile on vault-writable paths).
+      // Use Bash tool to invoke indexing if needed — goes through Bash permission flow.
 
       // List available Obsidian commands.
       tool(
@@ -270,20 +227,37 @@ export function createObsidianMcpServer(
             .describe("Open the note after creating (default: true)"),
         },
         async (args) => {
+          // Security: enforce vault-relative path and block .obsidian writes.
+          const normalized = nodePath.normalize(args.path).replace(/\\/g, "/");
+          if (!normalized || normalized.startsWith("..") || nodePath.isAbsolute(normalized)) {
+            return {
+              content: [
+                { type: "text" as const, text: "Error: path must be relative and within vault" },
+              ],
+            };
+          }
+          if (normalized === ".obsidian" || normalized.startsWith(".obsidian/")) {
+            return {
+              content: [
+                { type: "text" as const, text: "Error: cannot create files in .obsidian/" },
+              ],
+            };
+          }
+
           // Check if file already exists.
-          const existing = app.vault.getAbstractFileByPath(args.path);
+          const existing = app.vault.getAbstractFileByPath(normalized);
           if (existing) {
             return {
               content: [
-                { type: "text" as const, text: `File already exists: ${args.path}` },
+                { type: "text" as const, text: `File already exists: ${normalized}` },
               ],
             };
           }
 
           // Create parent folders if needed.
-          const folderPath = args.path.substring(
+          const folderPath = normalized.substring(
             0,
-            args.path.lastIndexOf("/")
+            normalized.lastIndexOf("/")
           );
           if (folderPath) {
             const folder = app.vault.getAbstractFileByPath(folderPath);
@@ -293,7 +267,7 @@ export function createObsidianMcpServer(
           }
 
           // Create the file.
-          const file = await app.vault.create(args.path, args.content || "");
+          const file = await app.vault.create(normalized, args.content || "");
 
           // Open if requested.
           if (args.openAfterCreate !== false) {
@@ -303,7 +277,7 @@ export function createObsidianMcpServer(
 
           return {
             content: [
-              { type: "text" as const, text: `Created note: ${args.path}` },
+              { type: "text" as const, text: `Created note: ${normalized}` },
             ],
           };
         }

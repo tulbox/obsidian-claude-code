@@ -9,6 +9,7 @@ import { findClaudeExecutable } from "../utils/claudeExecutable";
 const STORAGE_DIR = ".obsidian-claude-code";
 const CONVERSATIONS_FILE = "conversations.json";
 const HISTORY_DIR = "history";
+const SAFE_CONVERSATION_ID = /^[a-zA-Z0-9_-]+$/;
 
 // Stored conversation data.
 interface StoredConversation extends Conversation {
@@ -147,7 +148,8 @@ export class ConversationManager {
     await this.initialize();
 
     const vault = this.plugin.app.vault;
-    const path = `${STORAGE_DIR}/${HISTORY_DIR}/${id}.json`;
+    const path = this.getConversationPath(id);
+    if (!path) return null;
 
     try {
       // Use adapter.read() directly to avoid Obsidian's file cache issues.
@@ -172,7 +174,13 @@ export class ConversationManager {
   // Save the current conversation.
   private async saveConversation(conversation: StoredConversation) {
     const vault = this.plugin.app.vault;
-    const path = `${STORAGE_DIR}/${HISTORY_DIR}/${conversation.id}.json`;
+    const path = this.getConversationPath(conversation.id);
+    if (!path) {
+      logger.error("ConversationManager", "Refusing to save conversation with unsafe ID", {
+        id: conversation.id,
+      });
+      return;
+    }
 
     const content = JSON.stringify(conversation, null, 2);
 
@@ -246,7 +254,8 @@ export class ConversationManager {
     await this.initialize();
 
     const vault = this.plugin.app.vault;
-    const path = `${STORAGE_DIR}/${HISTORY_DIR}/${id}.json`;
+    const path = this.getConversationPath(id);
+    if (!path) return;
 
     const file = vault.getAbstractFileByPath(path);
     if (file) {
@@ -370,7 +379,8 @@ export class ConversationManager {
   // Load a conversation by ID without setting it as current.
   private async loadConversationById(id: string): Promise<StoredConversation | null> {
     const vault = this.plugin.app.vault;
-    const path = `${STORAGE_DIR}/${HISTORY_DIR}/${id}.json`;
+    const path = this.getConversationPath(id);
+    if (!path) return null;
 
     try {
       const exists = await vault.adapter.exists(path);
@@ -382,6 +392,15 @@ export class ConversationManager {
       logger.error("ConversationManager", "Failed to load conversation by ID", { error: String(error), id });
       return null;
     }
+  }
+
+  // Resolve a conversation file path with strict ID validation.
+  private getConversationPath(id: string): string | null {
+    if (!SAFE_CONVERSATION_ID.test(id)) {
+      logger.warn("ConversationManager", "Rejected unsafe conversation ID", { id });
+      return null;
+    }
+    return `${STORAGE_DIR}/${HISTORY_DIR}/${id}.json`;
   }
 
   // Clear current conversation.

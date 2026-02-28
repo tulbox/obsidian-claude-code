@@ -389,7 +389,7 @@ export class ChatView extends ItemView {
   }
 
   private async handleSendMessage(content: string) {
-    logger.info("ChatView", "handleSendMessage called", { contentLength: content.length, preview: content.slice(0, 50) });
+    logger.info("ChatView", "handleSendMessage called", { contentLength: content.length });
 
     if (!content.trim() || this.isStreaming) {
       logger.warn("ChatView", "Early return from handleSendMessage", { empty: !content.trim(), isStreaming: this.isStreaming });
@@ -558,6 +558,15 @@ export class ChatView extends ItemView {
     }
   }
 
+  // Cap tool output stored in UI to prevent memory bloat.
+  private static readonly MAX_TOOL_OUTPUT_CHARS = 100_000;
+
+  private static truncateToolOutput(output: string): string {
+    if (output.length <= ChatView.MAX_TOOL_OUTPUT_CHARS) return output;
+    return output.slice(0, ChatView.MAX_TOOL_OUTPUT_CHARS) +
+      `\n\n[OUTPUT TRUNCATED — ${output.length.toLocaleString()} chars total, showing first ${ChatView.MAX_TOOL_OUTPUT_CHARS.toLocaleString()}]`;
+  }
+
   private handleToolResult(toolCallId: string, result: string, isError: boolean) {
     // Only update UI if we're still viewing the same conversation that owns the stream.
     const currentConv = this.conversationManager.getCurrentConversation();
@@ -571,11 +580,11 @@ export class ChatView extends ItemView {
       if (index !== -1 && this.messages[index].toolCalls) {
         const toolCall = this.messages[index].toolCalls!.find((t) => t.id === toolCallId);
         if (toolCall) {
-          toolCall.output = result;
+          toolCall.output = ChatView.truncateToolOutput(result);
           toolCall.status = isError ? "error" : "success";
           toolCall.endTime = Date.now();
           if (isError) {
-            toolCall.error = result;
+            toolCall.error = ChatView.truncateToolOutput(result);
           }
           this.messageList.render(this.messages);
         }

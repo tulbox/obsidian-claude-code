@@ -29,6 +29,12 @@ export const OBSIDIAN_UI_TOOLS = [
   "mcp__obsidian__open_file",
   "mcp__obsidian__show_notice",
   "mcp__obsidian__reveal_in_explorer",
+] as const;
+
+/**
+ * Obsidian tools that always require explicit approval.
+ */
+export const CONTROLLED_OBSIDIAN_TOOLS = [
   "mcp__obsidian__execute_command",
   "mcp__obsidian__create_note",
 ] as const;
@@ -96,10 +102,12 @@ export type RiskLevel = "none" | "low" | "medium" | "high";
 export function getToolRiskLevel(toolName: string): RiskLevel {
   if (isReadOnlyTool(toolName)) return "none";
   if (isObsidianUiTool(toolName)) return "low";
+  if (toolName === "mcp__obsidian__create_note") return "medium";
+  if (toolName === "mcp__obsidian__execute_command") return "high";
   if (isWriteTool(toolName)) return "medium";
   if (isSystemTool(toolName)) return "high";
   if (isSubagentTool(toolName)) return "low";  // Subagents request their own permissions.
-  return "low";  // Default for unknown tools.
+  return "medium";  // Unknown tools require explicit approval.
 }
 
 /**
@@ -119,8 +127,11 @@ export function shouldAutoApprove(
   // Always auto-approve Obsidian UI tools.
   if (isObsidianUiTool(toolName)) return true;
 
+  // These Obsidian tools are sensitive and must always prompt.
+  if ((CONTROLLED_OBSIDIAN_TOOLS as readonly string[]).includes(toolName)) return false;
+
   // Check if tool is in always-allowed list.
-  if (settings.alwaysAllowedTools.includes(toolName)) return true;
+  if (settings.alwaysAllowedTools.includes(toolName) && toolName !== "Bash") return true;
 
   // Check write tool settings.
   if (isWriteTool(toolName)) {
@@ -135,8 +146,8 @@ export function shouldAutoApprove(
   // Auto-approve subagent tools.
   if (isSubagentTool(toolName)) return true;
 
-  // Default: auto-approve unknown tools.
-  return true;
+  // Default: unknown tools require explicit approval.
+  return false;
 }
 
 /**

@@ -223,6 +223,14 @@ describe("ConversationManager (real)", () => {
       expect(loaded).toBeNull();
     });
 
+    it("should reject unsafe conversation IDs", async () => {
+      await manager.initialize();
+      const loaded = await manager.loadConversation("../secrets");
+
+      expect(loaded).toBeNull();
+      expect(mockPlugin.app.vault.adapter.read).not.toHaveBeenCalled();
+    });
+
     it("should set loaded conversation as current", async () => {
       const created = await manager.createConversation();
       manager.clearCurrent();
@@ -293,6 +301,18 @@ describe("ConversationManager (real)", () => {
 
       const conv = manager.getCurrentConversation();
       expect(conv?.sessionId).toBe("new-session-123");
+    });
+
+    it("should refuse to save when conversation ID becomes unsafe", async () => {
+      await manager.createConversation();
+      const writesBefore = mockPlugin.app.vault.adapter.write.mock.calls.length;
+
+      const conv = manager.getCurrentConversation() as any;
+      conv.id = "../unsafe";
+
+      await manager.updateSessionId("new-session-123");
+
+      expect(mockPlugin.app.vault.adapter.write.mock.calls.length).toBe(writesBefore);
     });
   });
 

@@ -12,6 +12,7 @@ import {
   createSuccessResultMessage,
   createErrorResultMessage,
   createToolUseMessage,
+  createToolResultMessage,
   createTaskToolMessage,
   createSDKConversationSequence,
   MockQueryIterator,
@@ -148,6 +149,58 @@ describe("AgentController SDK Integration", () => {
 
       expect(result.toolCalls![0].status).toBe("success");
       expect(result.toolCalls![0].endTime).toBeDefined();
+    });
+
+    it("should capture and truncate tool_result output", async () => {
+      const largeOutput = "x".repeat(120_000);
+      const messages: SDKMessage[] = [
+        createSystemInitMessage("session-123"),
+        createToolUseMessage("Read", { file_path: "/big.md" }, "tool-read-1"),
+        createToolResultMessage("tool-read-1", largeOutput),
+        createAssistantMessage("Done."),
+        createSuccessResultMessage(1, 0.01),
+      ];
+
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      const { controller, eventSpies } = testHarness;
+
+      const result = await controller.sendMessage("Read big file");
+      const readTool = result.toolCalls?.find((tc) => tc.id === "tool-read-1");
+
+      expect(readTool?.output).toContain("[OUTPUT TRUNCATED");
+      expect(readTool?.output?.length).toBeLessThan(110_000);
+      expect(eventSpies.onToolResult).toHaveBeenCalledWith(
+        "tool-read-1",
+        expect.stringContaining("[OUTPUT TRUNCATED"),
+        false
+      );
+    });
+  });
+
+  describe("permission security", () => {
+    it("should remove legacy Bash from persistent allowlist during permission checks", async () => {
+      const messages = createSDKConversationSequence("Ready");
+      testHarness = await createTestAgentController({
+        queryMessages: messages,
+        settings: {
+          alwaysAllowedTools: ["Bash"],
+          requireBashApproval: true,
+        },
+      });
+
+      const { controller, mockPlugin, getCanUseToolCallback } = testHarness;
+      await controller.sendMessage("Initialize");
+
+      const canUseTool = getCanUseToolCallback();
+      expect(canUseTool).toBeDefined();
+
+      const result = await canUseTool!("Bash", {
+        command: "security find-generic-password -wa test",
+      });
+
+      expect(result.behavior).toBe("deny");
+      expect(mockPlugin.settings.alwaysAllowedTools).not.toContain("Bash");
+      expect(mockPlugin.saveSettings).toHaveBeenCalled();
     });
   });
 
@@ -399,6 +452,23 @@ describe("AgentController SDK Integration", () => {
       expect(queryCall[0].options.cwd).toBeDefined();
     });
 
+    it("should append security system prompt to preset", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+
+      await testHarness.controller.sendMessage("Test");
+
+      const queryCall = (mockQuery as Mock).mock.calls[0];
+      const systemPrompt = queryCall[0].options.systemPrompt;
+      expect(systemPrompt.type).toBe("preset");
+      expect(systemPrompt.preset).toBe("claude_code");
+      expect(systemPrompt.append).toBeDefined();
+      expect(systemPrompt.append).toContain("SECURITY RULES");
+      expect(systemPrompt.append).toContain("NEVER execute shell commands");
+      expect(systemPrompt.append).toContain("UNTRUSTED user data");
+      expect(systemPrompt.append).toContain("NEVER pipe file contents");
+    });
+
     it("should pass maxBudgetUsd from settings", async () => {
       const messages = createSDKConversationSequence("Response");
       testHarness = await createTestAgentController({
@@ -410,6 +480,102 @@ describe("AgentController SDK Integration", () => {
 
       const queryCall = (mockQuery as Mock).mock.calls[0];
       expect(queryCall[0].options.maxBudgetUsd).toBe(10.0);
+    });
+  });
+
+  describe("blocked Bash commands", () => {
+    it("should hard-deny macOS security command", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      expect(canUseTool).toBeDefined();
+
+      const result = await canUseTool!("Bash", { command: "security find-generic-password -s 'myapp'" });
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("macOS Keychain");
+    });
+
+    it("should hard-deny keyctl command", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "keyctl read 12345" });
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("Linux kernel keyring");
+    });
+
+    it("should hard-deny GPG secret key export", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "gpg --export-secret-keys user@example.com" });
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("GPG secret key");
+    });
+
+    it("should hard-deny SSH private key reads", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "cat ~/.ssh/id_rsa" });
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("SSH private key");
+    });
+
+    it("should hard-deny env dumps", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "env" });
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("Environment variable");
+    });
+
+    it("should hard-deny password store access", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({ queryMessages: messages });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "pass show email/work" });
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("Password store");
+    });
+
+    it("should allow safe Bash commands", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({
+        queryMessages: messages,
+        settings: { requireBashApproval: false },
+      });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "ls -la" });
+      expect(result.behavior).toBe("allow");
+    });
+
+    it("should block even when requireBashApproval is false", async () => {
+      const messages = createSDKConversationSequence("Response");
+      testHarness = await createTestAgentController({
+        queryMessages: messages,
+        settings: { requireBashApproval: false },
+      });
+      await testHarness.controller.sendMessage("Test");
+
+      const canUseTool = testHarness.getCanUseToolCallback();
+      const result = await canUseTool!("Bash", { command: "security dump-keychain" });
+      expect(result.behavior).toBe("deny");
     });
   });
 });

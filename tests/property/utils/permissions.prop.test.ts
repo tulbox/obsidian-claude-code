@@ -4,6 +4,7 @@ import {
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
   OBSIDIAN_UI_TOOLS,
+  CONTROLLED_OBSIDIAN_TOOLS,
   SUBAGENT_TOOLS,
   SYSTEM_TOOLS,
   isReadOnlyTool,
@@ -38,6 +39,12 @@ describe("permissions property tests", () => {
 
         // Each tool should be in exactly one category.
         expect(categoryCount).toBe(1);
+      }
+    });
+
+    it("controlled Obsidian tools should not be in auto-approved UI list", () => {
+      for (const tool of CONTROLLED_OBSIDIAN_TOOLS) {
+        expect(OBSIDIAN_UI_TOOLS).not.toContain(tool as any);
       }
     });
 
@@ -97,7 +104,7 @@ describe("permissions property tests", () => {
       }
     });
 
-    it("unknown tools should have low risk", () => {
+    it("unknown tools should have medium risk", () => {
       fc.assert(
         fc.property(fc.string({ minLength: 1, maxLength: 30 }), (toolName) => {
           // Skip if it's a known tool.
@@ -110,7 +117,7 @@ describe("permissions property tests", () => {
           ];
           if (allKnown.includes(toolName as any)) return;
 
-          expect(getToolRiskLevel(toolName)).toBe("low");
+          expect(getToolRiskLevel(toolName)).toBe("medium");
         }),
         { numRuns: 50 }
       );
@@ -163,6 +170,25 @@ describe("permissions property tests", () => {
       );
     });
 
+    it("controlled Obsidian tools should never auto-approve", () => {
+      fc.assert(
+        fc.property(
+          fc.constantFrom(...CONTROLLED_OBSIDIAN_TOOLS),
+          fc.boolean(),
+          fc.boolean(),
+          (tool, autoWrites, requireBash) => {
+            const settings = {
+              autoApproveVaultWrites: autoWrites,
+              requireBashApproval: requireBash,
+              alwaysAllowedTools: [tool],
+            };
+            expect(shouldAutoApprove(tool, settings)).toBe(false);
+          }
+        ),
+        { numRuns: 20 }
+      );
+    });
+
     it("subagent tools should always auto-approve", () => {
       fc.assert(
         fc.property(fc.constantFrom(...SUBAGENT_TOOLS), (tool) => {
@@ -172,10 +198,10 @@ describe("permissions property tests", () => {
       );
     });
 
-    it("always-allowed list should override other settings", () => {
+    it("always-allowed list should override for non-Bash tools", () => {
       fc.assert(
         fc.property(
-          fc.constantFrom(...WRITE_TOOLS, ...SYSTEM_TOOLS),
+          fc.constantFrom(...WRITE_TOOLS),
           (tool) => {
             const settings = {
               autoApproveVaultWrites: false,
@@ -187,6 +213,14 @@ describe("permissions property tests", () => {
         ),
         { numRuns: 20 }
       );
+    });
+
+    it("Bash should not be auto-approved from always-allowed list", () => {
+      expect(shouldAutoApprove("Bash", {
+        ...defaultSettings,
+        alwaysAllowedTools: ["Bash"],
+        requireBashApproval: true,
+      })).toBe(false);
     });
 
     it("write tools should respect autoApproveVaultWrites setting", () => {

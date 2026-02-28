@@ -3,6 +3,9 @@ import { ClaudeCodeSettings, DEFAULT_SETTINGS, CHAT_VIEW_TYPE } from "./types";
 import { ChatView } from "./views/ChatView";
 import { ClaudeCodeSettingTab } from "./settings/SettingsTab";
 import { logger } from "./utils/Logger";
+import { encryptString, decryptString, isEncryptionAvailable } from "./utils/safeStorage";
+import * as fs from "fs";
+import * as path from "path";
 
 export default class ClaudeCodePlugin extends Plugin {
   settings: ClaudeCodeSettings = DEFAULT_SETTINGS;
@@ -15,6 +18,7 @@ export default class ClaudeCodePlugin extends Plugin {
     const vaultPath = this.getVaultPath();
     logger.setLogPath(vaultPath);
     logger.info("Plugin", "Claude Code plugin loading", { vaultPath });
+    await this.noticeLoadedSkills(vaultPath);
 
     // Register the chat view.
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
@@ -79,17 +83,96 @@ export default class ClaudeCodePlugin extends Plugin {
   }
 
   onunload() {
-    // Clean up chat views.
+    // detachLeavesOfType triggers onClose() on each ChatView, which calls cancelStream().
     this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
     logger.info("Plugin", "Claude Code plugin unloaded");
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    let shouldSave = false;
+
+    // Normalize base URL early.
+    this.settings.baseUrl = (this.settings.baseUrl || "").trim();
+
+    // Security migration: Bash can never be persistently always-allowed.
+    if (this.settings.alwaysAllowedTools.includes("Bash")) {
+      this.settings.alwaysAllowedTools = this.settings.alwaysAllowedTools.filter((tool) => tool !== "Bash");
+      logger.warn("Plugin", "Removed legacy Bash entry from always-allowed tools");
+      shouldSave = true;
+    }
+
+    // Security: enforce base URL validation at load time (not just in UI).
+    const baseUrlError = ClaudeCodeSettingTab.validateBaseUrl(
+      this.settings.baseUrl,
+      this.settings.allowLocalBaseUrl
+    );
+    if (baseUrlError) {
+      logger.warn("Plugin", "Reset invalid base URL from settings", {
+        reason: baseUrlError,
+      });
+      this.settings.baseUrl = "";
+      shouldSave = true;
+    }
+
+    // Decrypt API key if it was stored encrypted.
+    if (this.settings.apiKey) {
+      this.settings.apiKey = decryptString(this.settings.apiKey);
+      // Migrate: if key was plaintext and encryption is now available, re-save encrypted.
+      if (!this.settings.apiKeyEncrypted && isEncryptionAvailable()) {
+        logger.info("Plugin", "Migrating API key to encrypted storage");
+        shouldSave = true;
+      }
+    }
+
+    if (shouldSave) {
+      await this.saveSettings();
+    }
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    // Clone settings for storage, encrypting the API key.
+    const dataToSave = { ...this.settings };
+    if (dataToSave.apiKey) {
+      dataToSave.apiKey = encryptString(dataToSave.apiKey);
+      dataToSave.apiKeyEncrypted = isEncryptionAvailable();
+    } else {
+      dataToSave.apiKeyEncrypted = false;
+    }
+    await this.saveData(dataToSave);
+  }
+
+  private async noticeLoadedSkills(vaultPath: string) {
+    const skillsDir = path.join(vaultPath, ".claude", "skills");
+    try {
+      const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true });
+      const skillNames = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+
+      if (skillNames.length === 0) return;
+
+      const previewCount = 5;
+      const preview = skillNames.slice(0, previewCount).join(", ");
+      const suffix = skillNames.length > previewCount
+        ? ` (+${skillNames.length - previewCount} more)`
+        : "";
+
+      new Notice(
+        `Loaded skills (${skillNames.length}): ${preview}${suffix}`,
+        7000
+      );
+      logger.info("Plugin", "Loaded project skills", { skills: skillNames });
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") {
+        logger.warn("Plugin", "Failed to read project skills directory", {
+          dir: skillsDir,
+          error: String(error),
+        });
+      }
+    }
   }
 
   // Get existing chat leaf if any.

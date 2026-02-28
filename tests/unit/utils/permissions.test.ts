@@ -3,6 +3,7 @@ import {
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
   OBSIDIAN_UI_TOOLS,
+  CONTROLLED_OBSIDIAN_TOOLS,
   SUBAGENT_TOOLS,
   SYSTEM_TOOLS,
   isReadOnlyTool,
@@ -34,7 +35,12 @@ describe("permissions utilities", () => {
     it("should have expected UI tools", () => {
       expect(OBSIDIAN_UI_TOOLS).toContain("mcp__obsidian__open_file");
       expect(OBSIDIAN_UI_TOOLS).toContain("mcp__obsidian__show_notice");
-      expect(OBSIDIAN_UI_TOOLS).toContain("mcp__obsidian__execute_command");
+      expect(OBSIDIAN_UI_TOOLS).not.toContain("mcp__obsidian__execute_command");
+    });
+
+    it("should have expected controlled Obsidian tools", () => {
+      expect(CONTROLLED_OBSIDIAN_TOOLS).toContain("mcp__obsidian__execute_command");
+      expect(CONTROLLED_OBSIDIAN_TOOLS).toContain("mcp__obsidian__create_note");
     });
 
     it("should have expected subagent tools", () => {
@@ -134,8 +140,8 @@ describe("permissions utilities", () => {
       expect(getToolRiskLevel("Task")).toBe("low");
     });
 
-    it("should return low for unknown tools", () => {
-      expect(getToolRiskLevel("UnknownTool")).toBe("low");
+    it("should return medium for unknown tools", () => {
+      expect(getToolRiskLevel("UnknownTool")).toBe("medium");
     });
   });
 
@@ -156,8 +162,9 @@ describe("permissions utilities", () => {
     });
 
     it("should respect always-allowed list", () => {
-      const settings = { ...defaultSettings, alwaysAllowedTools: ["Bash"] };
-      expect(shouldAutoApprove("Bash", settings)).toBe(true);
+      const settings = { ...defaultSettings, alwaysAllowedTools: ["Write"] };
+      expect(shouldAutoApprove("Write", settings)).toBe(true);
+      expect(shouldAutoApprove("Bash", { ...defaultSettings, alwaysAllowedTools: ["Bash"] })).toBe(false);
     });
 
     it("should respect autoApproveVaultWrites setting", () => {
@@ -174,8 +181,8 @@ describe("permissions utilities", () => {
       expect(shouldAutoApprove("Task", defaultSettings)).toBe(true);
     });
 
-    it("should auto-approve unknown tools by default", () => {
-      expect(shouldAutoApprove("WebSearch", defaultSettings)).toBe(true);
+    it("should not auto-approve unknown tools by default", () => {
+      expect(shouldAutoApprove("WebSearch", defaultSettings)).toBe(false);
     });
   });
 

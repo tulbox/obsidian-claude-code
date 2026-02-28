@@ -8,6 +8,7 @@ export class PermissionModal extends Modal {
   private onApprove: (choice: PermissionChoice) => void;
   private onDeny: () => void;
   private selectedChoice: PermissionChoice = "once";
+  private resolved = false;
 
   constructor(
     app: App,
@@ -39,7 +40,7 @@ export class PermissionModal extends Modal {
 
     // Risk level badge.
     const riskEl = contentEl.createDiv({ cls: "claude-code-permission-risk" });
-    const riskBadge = riskEl.createSpan({
+    riskEl.createSpan({
       cls: `claude-code-permission-risk-badge risk-${this.request.risk}`,
       text: `${this.request.risk.toUpperCase()} RISK`,
     });
@@ -73,11 +74,13 @@ export class PermissionModal extends Modal {
     sessionLabel.createSpan({ text: " Remember for this session" });
     sessionRadio.addEventListener("change", () => { this.selectedChoice = "session"; });
 
-    // Option 3: Always allow.
-    const alwaysLabel = rememberEl.createEl("label", { cls: "claude-code-permission-option" });
-    const alwaysRadio = alwaysLabel.createEl("input", { type: "radio", attr: { name: "remember", value: "always" } });
-    alwaysLabel.createSpan({ text: " Always allow (saved to settings)" });
-    alwaysRadio.addEventListener("change", () => { this.selectedChoice = "always"; });
+    // Option 3: Always allow (hidden for high-risk tools like Bash).
+    if (this.request.toolName !== "Bash") {
+      const alwaysLabel = rememberEl.createEl("label", { cls: "claude-code-permission-option" });
+      const alwaysRadio = alwaysLabel.createEl("input", { type: "radio", attr: { name: "remember", value: "always" } });
+      alwaysLabel.createSpan({ text: " Always allow (saved to settings)" });
+      alwaysRadio.addEventListener("change", () => { this.selectedChoice = "always"; });
+    }
 
     // Buttons.
     const buttonsEl = contentEl.createDiv({ cls: "claude-code-permission-buttons" });
@@ -85,7 +88,7 @@ export class PermissionModal extends Modal {
     const denyBtn = buttonsEl.createEl("button", { cls: "claude-code-permission-deny" });
     denyBtn.setText("Deny");
     denyBtn.addEventListener("click", () => {
-      this.onDeny();
+      this.resolveDeny();
       this.close();
     });
 
@@ -94,7 +97,7 @@ export class PermissionModal extends Modal {
     });
     approveBtn.setText("Approve");
     approveBtn.addEventListener("click", () => {
-      this.onApprove(this.selectedChoice);
+      this.resolveApprove(this.selectedChoice);
       this.close();
     });
 
@@ -114,7 +117,21 @@ export class PermissionModal extends Modal {
   }
 
   onClose() {
+    // Treat ESC/overlay close as deny so permission promises always resolve.
+    this.resolveDeny();
     const { contentEl } = this;
     contentEl.empty();
+  }
+
+  private resolveApprove(choice: PermissionChoice) {
+    if (this.resolved) return;
+    this.resolved = true;
+    this.onApprove(choice);
+  }
+
+  private resolveDeny() {
+    if (this.resolved) return;
+    this.resolved = true;
+    this.onDeny();
   }
 }

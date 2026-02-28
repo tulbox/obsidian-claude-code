@@ -59,6 +59,25 @@ EXCLUDED_FOLDERS = {".obsidian", ".smart-env", ".claude", "assets", "Templates"}
 EMBEDDING_DIM = 384  # MiniLM dimension
 
 
+def path_is_within(base: Path, candidate: Path) -> bool:
+    """Return True when candidate is inside base (including base itself)."""
+    try:
+        candidate.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_db_path(db_path: str, vault_path: str) -> Path:
+    """Ensure db_path is inside vault_path."""
+    resolved_db = Path(db_path).resolve()
+    resolved_vault = Path(vault_path).resolve()
+    if not path_is_within(resolved_vault, resolved_db):
+        print("Error: db_path must be within vault directory", file=sys.stderr)
+        sys.exit(1)
+    return resolved_db
+
+
 @dataclass
 class Note:
     """Represents a parsed markdown note."""
@@ -163,8 +182,16 @@ def scan_vault(vault_path: str) -> list[Note]:
     notes = []
     vault = Path(vault_path)
 
+    vault_resolved = vault.resolve()
     for md_file in vault.rglob("*.md"):
-        # Check if in excluded folder
+        # Security: skip symlinks to prevent indexing files outside vault.
+        if md_file.is_symlink():
+            continue
+        real_path = md_file.resolve()
+        if not path_is_within(vault_resolved, real_path):
+            continue
+
+        # Check if in excluded folder.
         rel_path = md_file.relative_to(vault)
         parts = rel_path.parts
 
@@ -314,16 +341,17 @@ def insert_chunks(conn: sqlite3.Connection, chunks: list[Chunk]):
 
 def build_index(vault_path: str, db_path: str, rebuild: bool = False):
     """Build or update the search index."""
+    resolved_db = validate_db_path(db_path, vault_path)
     print(f"Scanning vault: {vault_path}")
     notes = scan_vault(vault_path)
     print(f"Found {len(notes)} notes")
 
     # Initialize database
-    if rebuild and Path(db_path).exists():
+    if rebuild and resolved_db.exists():
         print("Removing existing database for rebuild...")
-        Path(db_path).unlink()
+        resolved_db.unlink()
 
-    conn = init_database(db_path)
+    conn = init_database(str(resolved_db))
 
     # Initialize embedding function
     print("Loading embedding model (ONNX MiniLM)...")
@@ -358,19 +386,20 @@ def build_index(vault_path: str, db_path: str, rebuild: bool = False):
         print(f"  Processed {progress}/{len(all_chunks)} chunks")
 
     print(f"\nIndex complete!")
-    print(f"  Database: {db_path}")
+    print(f"  Database: {resolved_db}")
     print(f"  Notes: {len(notes)}")
     print(f"  Chunks: {len(all_chunks)}")
 
 
-def show_stats(db_path: str):
+def show_stats(db_path: str, vault_path: str):
     """Show index statistics."""
-    if not Path(db_path).exists():
-        print(f"Database not found: {db_path}")
+    resolved_db = validate_db_path(db_path, vault_path)
+    if not resolved_db.exists():
+        print(f"Database not found: {resolved_db}")
         print("Run: python index.py --rebuild")
         return
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(str(resolved_db))
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
@@ -397,10 +426,10 @@ def show_stats(db_path: str):
     """).fetchall()
 
     # Get database size
-    db_size = Path(db_path).stat().st_size / (1024 * 1024)
+    db_size = resolved_db.stat().st_size / (1024 * 1024)
 
     print(f"\n=== Vault Search Index Statistics ===\n")
-    print(f"Database: {db_path}")
+    print(f"Database: {resolved_db}")
     print(f"Size: {db_size:.2f} MB")
     print(f"Notes: {notes_count}")
     print(f"Chunks: {chunks_count}")
@@ -446,7 +475,7 @@ def main():
     args = parser.parse_args()
 
     if args.stats:
-        show_stats(args.db_path)
+        show_stats(args.db_path, args.vault_path)
     else:
         build_index(args.vault_path, args.db_path, args.rebuild)
 

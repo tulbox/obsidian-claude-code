@@ -7,6 +7,15 @@ import * as path from "path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "./Logger";
 
+const TITLE_ENV_ALLOWLIST = [
+  "PATH", "HOME", "USER", "SHELL", "TERM", "LANG",
+  "TMPDIR",
+  "NODE_PATH", "NODE_OPTIONS",
+  "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+];
+
 /**
  * Format a duration in milliseconds to a human-readable string.
  */
@@ -67,8 +76,11 @@ export async function generateTitleWithHaiku(
       return null;
     }
 
-    // Build environment - include full process.env for OAuth support.
-    const env: Record<string, string | undefined> = { ...process.env };
+    // Build environment from allowlist only to avoid leaking unrelated secrets.
+    const env: Record<string, string | undefined> = {};
+    for (const key of TITLE_ENV_ALLOWLIST) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
     // Override API key if explicitly provided in settings.
     if (apiKey) {
       env.ANTHROPIC_API_KEY = apiKey;
